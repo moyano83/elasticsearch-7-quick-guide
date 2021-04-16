@@ -729,6 +729,517 @@ We can apply the explicit mapping using the create index API. i.e. `PUT <INDEX_N
 
 ## Chapter 5: Let's Do a Search!<a name="Chapter5"></a>
 
+### Introduction to data search
+
+Elasticsearch provides a search option for queries, strings, and even bodies of text. Most search APIs are multi-index. When performing a search, the
+routing parameter is used to point to the location of the shards in the indices that are to be searched. This search is known as a round-robin between
+replicas, where each replica is picked in the same rational order. As an alternative to the round-robin search replicas, an adaptive replica selection
+can be made. This will look for the best copy that the node can send the request to. There are a few criteria based on this method:
+
+    * The response time of the previous interactions between the coordinating node and the node that contains the copy of the data
+    * The extra time that the previous requests took to execute on the node containing the data
+    * The queue size of the requested data on the coordinating node
+
+To activate this adaptive replica selection, the following setting needs to be changed to true _cluster.routing.use_adaptive_replica_selection_. In
+Elasticsearch, individual searches have timeout criteria. Elasticsearch will apply a global timeout to all the clusters that do not mention a timeout
+in their settings. To change these timeout settings, simply modify the _search.default_search_timeout_ parameter and set a specific value. A value of
+-1 will set the global search timeout to no timeout at all. To cancel a search, the _\_cancel_ parameter is needed, along with the ID of the search
+task. Since searches on shards can be canceled, a large segment may lead to a delay in the cancellation. To minimize the cancel responsiveness, set
+_search.low_level_cancellation_ to true. The searches that are performed on Elasticsearch may need access to various shards simultaneously, and this
+will affect the CPU and memory. Users can limit the number of shards that can be accessed at once through the _max_concurrent_shard_requests_ setting.
+This is a hard limit that can be set to any value. A soft limit can also be created using _action.search.shard_count.limit_.
+
+### Search API
+
+The search API performs a search using a query string, a parameter, or a request body as the search criteria, and then it returns exact matches. i.e
+
+    * `GET facebook/_search?q=user:flower` search all of the documents in a specific index using the cactus_flower user
+    * `GET _all/_search?q=tag:wow` search for a tag wow in all indices
+
+#### URI search
+
+A URI search can be executed using a URI in the request parameters `GET <INDEX_NAME>>/_search?q=user:flower`. Parameters available in this search:
+
+    * q: The query string.
+    * df: The default field to be used when nothing is defined.
+    * analyzer: The analyzer name that was used to execute the search
+    * analyze_wildcard: Checks whether a wildcard and prefix queries are to be analyzed. Defaults to false
+    * batched_reduced_size: The number of shards that will be reduced on the coordinating node. This is used to void memory overhead per request
+    * default_operator: The default operator that is to be used. The default is OR and it can be set to AND
+    * lenient: Ignores format-based failures. Defaults to false
+    * explain: Contains information on how the scoring of the hit was computed. It does this for every hit
+    * stored_fields: Retrieves the selective store fields of the documents that were retrieved with each hit. When no value is indicated, it will 
+      show no fields in the returned hits.
+    * sort: Performs sorting and is written as fieldName or fieldName:asc/ or fieldName:dec. It can be an actual field name or a special _score name. 
+    * track_scores: Defaults to true and tracks the scores when sorting. It will return this with the hits.
+    * track_total_hits: Defaults to false and tracks the total number of hits that match the query.
+    * timeout: A search timeout that's used to execute the search within a specified time. Defaults to no timeout
+    * terminate_after: Will retrieve whether the query execution was terminated early. Defaults to no terminate_after
+    * from: The number of the index that will start the return values. Defaults to 0
+    * size: The number of hits to be returned. Defaults to 10
+    * search_type: Determines which type of search operation is to be executed. It can be dfs_query_then_fetch or query_then_fetch
+    * allow_partial_search_results: If false, any partial results will mean an overall failure. Controlled with search.default_allow_partial_results
+
+#### Request body search
+
+Search requests are executed with a search DSL. i.e run `GET <INDEX_NAME>/_search` with data:
+
+```json
+{
+  "query": {
+    "term": {
+      "user": "flower"
+    }
+  }
+}
+```
+
+The parameters for the body search are as follows:
+
+    * timeout: If set, this means that searches must be executed within a specified time. Defaults to no timeout.
+    * from: The number of the index from which to start the return values. Defaults to 0.
+    * size: The number of hits to be returned. Defaults to 10.
+    * search_type: Determines which type of search operation is to be executed. It can be dfs_query_then_fetch or query_then_fetch.
+    * request_cache: If set to true, it enables the caching of search requests with aggregations and suggestions (known as size = 0). 
+    * allow_partial_search_results: If the request returns partial results, this will result in an overall failure if this parameter is set to false. 
+      This can be controlled with the search.default_allow_partial_results setting. 
+    * terminate_after: This will specify whether the query execution was terminated early. Defaults to no terminate_after.
+    * batched_reduced_size: The number of shards that will be reduced on the coordinating node. This is used to void memory overhead request
+
+The search_type, allow_partial_search_results, and request_cache parameters are set as query string parameters. The others are passed within the body.
+Searches within the body are allowed with HTTP, GET, and POST.
+
+##### Query
+
+The _query_ element defines a query in the request body using Query DSL
+
+##### From/size
+
+The search query can be modified to return only a specific set of indices or a number of hits using the _from_ and _size parameters, the _from_
+_size_ and the overall size cannot be greater than the _index.max_result_window_.
+
+##### Sort
+
+The _sort_ element allows us to sort the results on specific fields. Each sort is reversible. To sort by score, the _\_score_ field name is used,
+whereas to sort by an index, the _\_doc_ field name is used. The endpoint is `GET /<INDEX_NAME>/_search` and syntax is:
+
+```json
+{
+  "sort": [
+    {
+      "field1": {
+        "order": "asc",
+        "mode": "avg"
+      },
+      "field2": {
+        "name": "desc"
+      }
+    },
+    "_score"
+  ],
+  "query": {
+    "term": {
+      "user": "flower"
+    }
+  }
+}
+```
+
+The _\_order_ term can be _asc_ or _desc_ (_\_score_ defaults to desc, whereas everything else defaults to asc). The mode option controls the array
+value to be chosen for the sorting document:
+
+     * min: Chooses the lowest value
+     * max: Chooses the highest value
+     * sum: Chooses the sum of all the values as a sort value. This is only for number-based array fields
+     * avg: Chooses the average of all the values as a sort value. This is only for number-based array fields
+     * median: Chooses the median of all the values as a sort value. This is only for number-based array fields
+
+Elasticsearch supports sorting in nested objects as well, with the following properties:
+
+    * path: Defines the path to the nested object
+    * filter: A filter that the inner objects need to pass through before being considered
+    * max_children: The maximum number of children per root document (unlimited by default)
+    * nested: Applies to another nested path within the nested object
+
+##### Source filtering
+
+This controls how the _source field is returned with each hit, defaults to true (It also accepts wildcards):
+
+```json
+{
+  "_source": "obj.*",
+  "query": {
+    "term": {
+      "user": "cactus_flower"
+    }
+  }
+}
+```
+
+To have more specific search control, the pattern's _includes_ and _excludes_ (`{"source":{"includes":[...], "excludes":[...]}`).
+
+##### Fields
+
+The stored_fields parameter is off by default and is not recommended. Source filtering is recommended instead.
+
+##### Script fields
+
+Script fields return a script evaluation for each hit. They are applied to _fields_ that are not stored and allow the evaluated value of the script to
+be returned. They can also access the document's source and extract specific elements with params['_source']. The following example shows _source
+pointing to the JSON-like model:
+
+```json
+{
+  "query": {
+    "match_all": {}
+  },
+  "script_fields": {
+    "test1": {
+      "script": "params['_source']['message']"
+    }
+  }
+}
+```
+
+##### Doc value fields
+
+This field returns the doc value representation of a field for each hit. They are applied to fields that have doc values, regardless of whether they
+are stored:
+
+```json
+{
+  "query": {
+    "match_all": {}
+  },
+  "docvalue_fields": [
+    {
+      "field": "*_date_field",
+      "format": "epoch_millis"
+    }
+  ]
+}
+```
+
+In the above example "*_date_field"  matches all fields that end with field, and "format" is the format to be applied to the fields. Date fields and
+numeric fields are some of the only fields that accept custom formats.
+
+##### Post filter
+
+The post filter is applied to the hits that are returned after a search request.
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "brand": "milka"
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "tastes": {
+      "terms": {
+        "field": "salty"
+      }
+    }
+  }
+}
+```
+
+The above query, retrieves all chocolates from milka that are marked as salty.
+
+##### Highlighting
+
+Highlighters permit the highlighting of snippets from one or more fields. The highlighters are specified in the highlighter type and they can be:
+
+    * unified highlighter: uses the Lucene Unified highlighter and breaks the text into sentences by using the BM25 algorithm
+    * plain highlighter: uses the standard Lucene highlighter and returns the reflect query logic
+    * fvh highlighter: uses the Lucene fvh. It can be customized using boundary_scanner and requires setting term_vector to with_position_offsets 
+      in order to increase the size of the index. It can also combine multiple fields and can be used to assign weights to different positions to 
+      modify the order of importance of a query.
+
+The parameters that are used by highlight fields are:
+
+    * boundary_chars: A string that contains the boundary characters (defaults to .,!?\t\n)
+    * boundary_max_scan: The range of the boundary characters (defaults to 20) 
+    * boundary_scanner_locale: This controls which locale is used for searches 
+    * encoder: Specifies whether the snippet should be default or html (HTML encoded)
+    * fields: Specifies the fields that are to be retrieved for highlighting
+    * force_source: Highlights the source of the field (defaults to false)
+    * fragmenter: Indicates how the text is to be broken in snippets. It can be simple or span.
+    * fragment_offset: This controls which end of the range to start highlighting. Only available in the fvh highlighter.
+    * fragment_size: Specifies the size of the highlighted fragment in characters (defaults to 100)
+    * highlight_query: Highlights the matches for a different query. 
+    * matched_fields: Combines multiple fields and highlights a single field. 
+    * no_match_size: Amount of text to be returned from the beginning of the field in the case where there are no matching fragments (defaults to 0) 
+    * number_of_fragments: Specifies the maximum number of fragments to be returned (defaults to 5)
+    * order: Sorts the highlighted hits. The score value will sort according to the score of the hit (defaults to 5)
+    * phrase_limit: The number of matching phrases within a document to be considered. To prevent fvh from analyzing too many phrases affecting memory
+    * pre_tags: Defines the HTML tags. Used in conjunction with post_tags. By default, the text is wrapped with <em> and </em> tags.
+    * post_tags: Defines the HTML tags. Used in conjunction with pre_tags. By default, the text is wrapped with <em> and </em> tags.
+    * require_field_match: Highlights only the fields that match the query. If set to false, it will highlight all fields (defaults to true)
+    * tags_schema: Sets to the styled schema to define pre_tags and post_tags.
+    * type: Indicates the type of highlighter to be used, that is, unified, plain, or fvh.
+
+##### Rescoring
+
+Rescoring helps with the precision of requests by reordering the search hits. It is used in the query and post_filter phases:
+
+```json
+{
+  "query": {
+    "match": {
+      "message": {
+        "operator": "or",
+        "query": "the quick brown"
+      }
+    }
+  },
+  "rescore": {
+    "window_size": 50,
+    "query": {
+      "rescore_query": {
+        "match_phrase": {
+          "message": {
+            "query": "the quick brown",
+            "slop": 2
+          }
+        }
+      },
+      "query_weight": 0.7,
+      "rescore_query_weight": 1.2
+    }
+  }
+}
+```
+
+The parameters are as follows:
+
+    * total: Sum the original score and the rescore query score 
+    * multiply: Multiply the original score and the rescore query score 
+    * avg: The average of the original score and the rescore query score 
+    * max: The maximum of the original score and the rescore query score 
+    * min: The minimum of the original score and the rescore query score
+
+##### Search type
+
+Searches can be executed using different paths. The distribution search operation is scattered to all the relevant shards, and then the results are
+retrieved. It will sort through the results and check for correctability. Since each shard is independent, the searches of term frequencies happen
+over all the shards. To provide an accurate ranking, the term frequencies of the shards need to be used to calculate a global term frequency, which
+will then be applied to the query in each shard search. Elasticsearch allows control over the type of search to be performed on a per search request
+basis.
+
+The settings are configured in the search_type parameter in the query string. The first setting that can be used is the _query_then_fetch_
+value. This will send the query to all the shards that are relevant. Each shard performs the search and returns the necessary information to the
+coordinating node, which will merge and resort the results from all the shards it contains. The second value that can be used is _
+dfs_query_then_fetch_. This is very similar to _query_then_fetch_, except that it provides more accurate scoring.
+
+##### Scroll
+
+The scroll API retrieves a large number of results. The scroll field is used to scroll through large amounts of data.
+
+##### Preference
+
+This controls the preference of the shard copies that are used to execute the search. It can be set to any of the following:
+
+    * _only_local: Only local shards that have been allocated to the local node are used to execute the operation
+    * _local: Only shards that are from the local node are used to execute the operation, the process falls back to other shards when not possible
+    * _prefer_nodes: abc, xyz: Executes the operation on those nodes if possible
+    * _shards: 2,3: Restricts operation to the specified shards
+    * _only_nodes: abc*, x*yz,...:Restricts operation to the specified nodes
+
+##### Explanation
+
+This will print an explanation of the query regarding how each hit was computed, accepts true/false.
+
+##### Version
+
+To return the version number for each result hit, along with the results, accepts true/false.
+
+##### min_score
+
+_\_min_score_ excludes documents that do not meet the minimum score specified.
+
+##### Named queries
+
+Using _\_name_, we can define a name for each filter and query.
+
+##### Inner hits
+
+Used for nested and parent-join documents that matches. In the case of parent/child, the parent documents are retrieved on matches in the child
+documents, while child documents are returned in the match of parent documents. The inner hits feature is used to determine exactly which inner nested
+object or parent/child document matches the search query. The query format is like `"<query>": { "inner_hits": { <inner_hits_options>}}`, and the
+options are as follows:
+
+    * from: The first hit to fetch inner_hits
+    * size: The maximum number of hits per inner_hits
+    * sort: What type of sorting should take place. Defaults to sorting by score
+    * name: Defines the name for the inner hit definition
+
+##### Field collapsing
+
+This allows the search to collapse according to the field values
+
+#### Search template
+
+The search template API allows for the use of the _mustache language_ to prerender search actions before they are executed. The endpoint is `GET
+_search/template` and data:
+
+```json
+{
+  "source": {
+    "query": {
+      "match": {
+        "{{my_field}}": "{{my_value}}"
+      }
+    },
+    "size": "{{my_size}}"
+  },
+  "params": {
+    "my_field": "message",
+    "my_value": "some message",
+    "my_size": 5
+  }
+}
+```
+
+In the preceding example, we are filling the existing templates with template parameters.
+
+#### Multi search template
+
+The multi search template allows for the execution of the search over multiple template requests in the same API. It does this by using the
+_\_msearch/template_ endpoint. It is similar in format to the multi search API. The structure of the multi search template is:
+
+header\n body\n header\n body\n
+
+As seen in the preceding example, each newline character ends with \n. Each line may be preceded by \r. The header indicates which indices are to be
+searched, that is, _search_type_, _preference_, and _routing_. i.e.
+
+```text
+{"index": "test"}
+{"source": {"query": {"match": {"user" : "{{username}}" }}}, "params": {"username":"John"}}
+{"source": {"query": {"{{query_type}}": {"name": "{{name}}" }}}, "params":{"query_type": "match_phrase_prefix", "name": "Smith"}}
+{"index": "_all"}
+{"id": "template_1", "params": {"query_string": "search for these words" }}
+```
+
+#### Search shards API
+
+API that retrieves the indices and shards that the search request is executed on. Used to get feedback and determine issues, plan optimizations, or
+determine shard preference. To specify a route, add the routing parameter with the path to the search shard API like in
+`GET /<INDEX_NAME>/_search_shards?routing=foo,bar`. The search shard API uses the following parameters:
+
+    * routing: A list of comma-separated values to determine the location of the shards to be searched during execution
+    * preference: Gives preference to shard replicas (defaults to random) 
+    * local: A Boolean value that determines whether to read the cluster locally
+
+#### Suggesters
+
+The suggest feature looks for similar terms based on the suggested text. _\_suggesters_ has been deprecated and _\_search_ is now used instead.
+
+#### Multi search API
+
+The multi search API allows for the execution of search requests within the same. The header indicates which indices are to be searched, that is,
+_search_type_, _preference_, and _routing_.
+
+#### Count API
+
+The _\_count_ API executes a query and retrieves the number of matches within that query. The query can be defined using a query string as a parameter
+or using Query DSL. It can be applied to multiple indices. The request parameters can be any of the following:
+
+    * df: The default field to be used
+    * analyzer: The name of the analyzer that's used to analyze the query string
+    * default_operator: The default operator to be used can be OR (default) or AND
+    * lenient: Ignores format-based failures (defaults to false)
+    * analyze_wildcard: Indicates whether a wildcard and prefix queries are to be analyzed (defaults to false)
+    * terminate_after: Will retrieve whether the query's execution was terminated early (defaults to no terminate_after)
+
+#### Validate API
+
+The validate API validates a potentially expensive query without executing it. It uses the parameters _df_, _analyzer_, _default\_operator_,
+_lenient_ and _analyze_wildcard_ explained before. The endpoint is `GET <INDEX_NAME>/_validate/query?q=user:foo` and the resulting output is like:
+
+```json
+{
+  "valid": true,
+  "_shards": {
+    "total": 1,
+    "successful": 1,
+    "failed": 0
+  }
+}
+```
+
+#### Explain API
+
+The explain API explains the score computation of a query and a document `GET /<INDEX_NAME>/_explain/<DOCUMENT_IT>` with data
+
+```json
+{
+  "query": {
+    "match": {
+      "message": "elasticsearch"
+    }
+  }
+}
+```
+
+Here, we have the following parameters
+
+    * _source: Retrieves the source if set to true
+    * stored_fields: Controls which stored fields are returned as part of the document being explained
+    * routing: When routing is used during indexing, this will control the routing
+    * parent: This is the same as routing
+    * preference: Controls which shard the explain is executed on
+    * source: The data of the request will be put in the query string
+    * q: The query string
+
+On top of those, we have the parameters _df_, _analyzer_, _default\_operator_, _lenient_ and _analyze_wildcard_ explained before.
+
+#### Profile API
+
+Profile is a debugging tool which adds detailed information about the execution of each component in a search request. It gives the user insight about
+every step a search request performs and can assist in determining why certain requests are slow. Include it as a parameter within the body of the
+_\_search_ request.
+
+##### Profiling queries
+
+The Profile API on queries exposes Lucene class names and concepts. This requires some knowledge of Lucene:
+
+    * The query section contains detailed timing that's executed by Lucene on a shard
+    * The breakdown component lists the timing statistics about the low-level execution
+    * The collectors section shows the high-level execution details
+    * The rewrite section performs optimizations. This is a very complex process
+
+##### Profiling aggregations
+
+The aggregations section contains detailed information about the timing of the aggregation tree that's executed by a shard.
+
+##### Profiling considerations
+
+When using the Profile API, a non-negligible overhead is added to the search execution, and this leads to a number of limitations:
+
+    * Profile does not measure the search fetch phase
+    * Profile does not measure the network overhead
+    * It also doesn't account for the time spent in the queue, merging, or doing any additional work 
+    * The statistics are not available for suggestions, highlighting, or dfs_query_then_fetch 
+    * It is a highly experimental instrument and a part of Lucene that is used for diagnostics
+
+#### Field capabilities API
+
+This retrieves the capabilities of fields among multiple indices. To execute on all indices, use the query `GET _field_caps?fields=field_name` and to
+execute on a specific index, use `GET <INDEX_NAME>/_field_caps?fields=field_name`. The parameters are as follows:
+
+    * searchable: Whether the field is indexed for search on all indices 
+    * aggregatable: Whether the field can be aggregated on all indices
+    * indices: A list of indices where the field is of the same type 
+    * non_searchable_indices: A list of indices where searches cannot be executed 
+    * non_aggregatable_indices: A list of indices where the field is not aggregatable
+
 ## Chapter 6: Performance Tuning<a name="Chapter6"></a>
 
 ## Chapter 7: Aggregating Datasets<a name="Chapter7"></a>
